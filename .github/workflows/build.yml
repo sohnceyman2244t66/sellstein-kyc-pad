@@ -9,20 +9,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Verify which token CI has
+      - name: Build + push PAD image to Docker Hub (public)
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          curl -s https://api.cloudflare.com/client/v4/user/tokens/verify -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" | grep -oE '"id":"[a-f0-9]+"|"status":"[^"]+"' || echo "verify failed"
-      - name: Build PAD image + push to Cloudflare managed registry
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ef434c4ac7895f1678dde44a64db385d
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -o pipefail
-          npx --yes wrangler@4.94.0 containers build . --tag sellstein-kyc-pad:1 --push 2>&1 | tee build-out.txt
-          echo "=== pushed image reference (grep) ==="
-          grep -iE "registry|image|pushed|sellstein-kyc-pad" build-out.txt || true
+          echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
+          docker build -t "docker.io/$DH_USER/kyc-pad:1" .
+          docker push "docker.io/$DH_USER/kyc-pad:1"
+          echo "=== ensure repo is public (so CF pulls without auth) ==="
+          JWT=$(curl -s -X POST https://hub.docker.com/v2/users/login -H "Content-Type: application/json" -d "{\"username\":\"$DH_USER\",\"password\":\"$DH_TOKEN\"}" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(d).token||'')}catch(e){}}")
+          if [ -n "$JWT" ]; then
+            curl -s -X PATCH "https://hub.docker.com/v2/repositories/$DH_USER/kyc-pad/" -H "Authorization: JWT $JWT" -H "Content-Type: application/json" -d '{"is_private":false}' -o /dev/null -w "set-public http: %{http_code}\n" || true
+          else
+            echo "could not get hub JWT to set public (will verify/fix separately)"
+          fi
+          echo "IMAGE_REF=docker.io/$DH_USER/kyc-pad:1"
